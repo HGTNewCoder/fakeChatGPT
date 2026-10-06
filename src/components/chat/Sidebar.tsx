@@ -6,6 +6,7 @@ import { useEffect } from "react";
 import type { Conversation } from "@/hooks/useChat";
 import type { Gpt, SharedGpt } from "@/hooks/useGpts";
 import type { SessionUser } from "@/lib/auth";
+import type { BuiltinGptCard } from "@/lib/builtinGptCards";
 import { APP_NAME } from "@/lib/constants";
 import { ConversationList } from "./ConversationList";
 import { GptAvatar } from "./GptAvatar";
@@ -23,6 +24,8 @@ type Props = {
   onNewChat: () => void;
   onSelect: (id: string) => void;
   onDelete: (id: string) => void;
+  /** GPTs that ship with the app, listed right under New chat. */
+  builtins: BuiltinGptCard[];
   gpts: Gpt[];
   /** Other people's GPTs the user opened through a share link. */
   shared: SharedGpt[];
@@ -89,6 +92,22 @@ export function Sidebar(props: Props) {
           <SidebarRow icon={<SquarePen className="size-[18px]" />} onClick={props.onNewChat} labelClass={label}>
             New chat
           </SidebarRow>
+          {props.builtins.map((g) => (
+            <button
+              key={g.id}
+              type="button"
+              onClick={() => props.onStartGpt(g.id)}
+              title={g.description}
+              aria-current={g.id === props.currentGptId ? "page" : undefined}
+              className={clsx(
+                "flex h-9 items-center gap-2.5 rounded-lg px-2 text-sm transition-colors hover:bg-hover",
+                g.id === props.currentGptId && "bg-hover font-medium",
+              )}
+            >
+              <GptAvatar name={g.name} avatar={g.avatar} className="size-[22px] text-[10px]" />
+              <span className={clsx("truncate", label)}>{g.name}</span>
+            </button>
+          ))}
         </nav>
 
         {/* GPTs + conversations */}

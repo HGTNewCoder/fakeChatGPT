@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { gptApi, type GptCard } from "@/hooks/useGpts";
+import { BUILTIN_GPT_CARDS } from "@/lib/builtinGptCards";
 import type { ImageSize } from "@/lib/validation";
 import { useChatContext } from "./ChatProvider";
 import { Composer, type ComposerMode } from "./Composer";
@@ -48,9 +49,10 @@ export function ChatApp() {
   };
 
   const currentGptId = chat.active ? chat.active.gptId : pendingGptId;
+  const builtinGpt = BUILTIN_GPT_CARDS.find((g) => g.id === currentGptId);
   const ownGpt = gpts.gpts.find((g) => g.id === currentGptId);
   const sharedGpt = ownGpt ? undefined : gpts.shared.find((g) => g.id === currentGptId);
-  const currentGpt: GptCard | undefined = ownGpt ?? sharedGpt;
+  const currentGpt: GptCard | undefined = builtinGpt ?? ownGpt ?? sharedGpt;
   // Someone else's GPT is only reachable through its share link.
   const gptRef = { gptId: currentGptId, shareId: chat.active ? chat.active.shareId : sharedGpt?.shareId };
   const allowImages = currentGpt?.capabilities.imageGeneration ?? true;
@@ -95,6 +97,7 @@ export function ChatApp() {
           setMobileOpen(false);
         }}
         onDelete={chat.remove}
+        builtins={BUILTIN_GPT_CARDS}
         gpts={gpts.gpts}
         shared={gpts.shared}
         onHideShared={async (g) => {

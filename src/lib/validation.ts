@@ -51,7 +51,8 @@ export type GptDraft = z.infer<typeof gptDraftSchema>;
 export const SHARE_ID_PATTERN = /^[A-Za-z0-9_-]{12}$/;
 
 export const chatSchema = z.object({
-  gptId: z.string().regex(/^[a-f0-9]{24}$/).optional(),
+  /** A saved GPT's ObjectId, or a built-in GPT id like "builtin-escape-room". */
+  gptId: z.string().regex(/^([a-f0-9]{24}|builtin-[a-z-]{1,40})$/).optional(),
   /** Someone else's GPT, used through its share link. */
   shareId: z.string().regex(SHARE_ID_PATTERN).optional(),
   /** Set by image mode: always create an image, in this size. */

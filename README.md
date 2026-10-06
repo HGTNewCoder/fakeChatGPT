@@ -69,6 +69,14 @@ browser). Knowledge up to ~24k characters is sent whole; larger sets are chunked
 for the latest message are picked with BM25 keyword search (`lib/knowledge.ts`, MiniSearch). Chat state
 lives in the `(chat)` layout, so in-memory chats survive a trip to the editor and back.
 
+## Built-in GPTs
+
+Two GPTs ship with the app and appear for every user right under **New chat**: **Escape Room Giải Đố**
+(5-lock puzzle game, medium difficulty for grades 7-9, puzzles only) and **Gia sư Socratic** (guides with
+questions, gives the answer only when the student is genuinely stuck). They are defined in code, not the
+database: `lib/builtinGptCards.ts` holds what the browser sees, `lib/builtinGpts.ts` (server-only) holds
+their instructions. Edit those files to change them; nobody can edit or delete them from the UI.
+
 ## Sharing GPTs
 
 Like ChatGPT's "Anyone with the link". In the editor, **Share** switches a created GPT between

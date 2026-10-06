@@ -2,6 +2,8 @@ import { isValidObjectId } from "mongoose";
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
 import { deepseekMessages, parseJson, readEvents, UpstreamError } from "@/lib/anthropic";
+import { isBuiltinGptId } from "@/lib/builtinGptCards";
+import { getBuiltinGpt } from "@/lib/builtinGpts";
 import { ASPECTS, IMAGE_TOOL, SEARCH_TOOL, SYSTEM_PROMPT } from "@/lib/chatTools";
 import { generateImage, ImageGenError } from "@/lib/imageGen";
 import { knowledgeContext } from "@/lib/knowledge";
@@ -53,6 +55,11 @@ export async function POST(req: Request) {
   if (shareId) {
     gpt = await Gpt.findOne({ shareId, visibility: "link", status: "published" }).select(fields).lean();
     if (!gpt) return NextResponse.json({ error: "This GPT is no longer shared" }, { status: 404 });
+  } else if (isBuiltinGptId(gptId)) {
+    // Built-in GPTs ship with the app: same for everyone, no knowledge, no editor drafts.
+    const builtin = getBuiltinGpt(gptId!);
+    if (!builtin) return NextResponse.json({ error: "This GPT no longer exists" }, { status: 404 });
+    gpt = { name: builtin.name, instructions: builtin.instructions, capabilities: builtin.capabilities, knowledge: [] };
   } else if (gptId) {
     gpt = isValidObjectId(gptId) ? await Gpt.findOne({ _id: gptId, owner: user.id }).select(fields).lean() : null;
     if (!gpt) return NextResponse.json({ error: "This GPT no longer exists" }, { status: 404 });
