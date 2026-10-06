@@ -2,9 +2,11 @@ import { Schema, model, models, type InferSchemaType, type Model } from "mongoos
 
 const userSchema = new Schema(
   {
-    email: { type: String, required: true, unique: true, lowercase: true, trim: true },
-    name: { type: String, required: true, trim: true },
+    // Stored lowercase, so login is case-insensitive.
+    username: { type: String, required: true, unique: true, lowercase: true, trim: true },
     passwordHash: { type: String, required: true },
+    /** Other people's shared GPTs this user opened, shown in their sidebar. */
+    sharedGpts: { type: [{ type: Schema.Types.ObjectId, ref: "Gpt" }], default: [] },
   },
   { timestamps: true },
 );

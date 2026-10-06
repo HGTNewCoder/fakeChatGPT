@@ -1,22 +1,22 @@
-export type ThemePref = "system" | "light" | "dark";
+export type Theme = "light" | "dark";
 
 const KEY = "theme";
 
-export function readTheme(): ThemePref {
+/** The saved choice, or the system preference until the user picks one. */
+export function readTheme(): Theme {
   try {
     const value = localStorage.getItem(KEY);
-    return value === "light" || value === "dark" ? value : "system";
+    if (value === "light" || value === "dark") return value;
   } catch {
-    return "system";
+    // storage unavailable; fall back to the system preference
   }
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
-export function applyTheme(pref: ThemePref) {
-  const root = document.documentElement;
-  if (pref === "system") delete root.dataset.theme;
-  else root.dataset.theme = pref;
+export function applyTheme(theme: Theme) {
+  document.documentElement.dataset.theme = theme;
   try {
-    localStorage.setItem(KEY, pref);
+    localStorage.setItem(KEY, theme);
   } catch {
     // storage unavailable; theme still applies for this page view
   }

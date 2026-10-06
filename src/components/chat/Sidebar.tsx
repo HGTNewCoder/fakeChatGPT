@@ -1,12 +1,14 @@
 "use client";
 
 import clsx from "clsx";
-import { PanelLeft, Search, SquarePen, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { PanelLeft, Pencil, Plus, SquarePen, X } from "lucide-react";
+import { useEffect } from "react";
 import type { Conversation } from "@/hooks/useChat";
+import type { Gpt, SharedGpt } from "@/hooks/useGpts";
 import type { SessionUser } from "@/lib/auth";
 import { APP_NAME } from "@/lib/constants";
 import { ConversationList } from "./ConversationList";
+import { GptAvatar } from "./GptAvatar";
 import { IconButton } from "./IconButton";
 import { UserMenu } from "./UserMenu";
 
@@ -20,6 +22,16 @@ type Props = {
   onCloseMobile: () => void;
   onNewChat: () => void;
   onSelect: (id: string) => void;
+  onDelete: (id: string) => void;
+  gpts: Gpt[];
+  /** Other people's GPTs the user opened through a share link. */
+  shared: SharedGpt[];
+  onHideShared: (gpt: SharedGpt) => void;
+  /** GPT of the chat on screen, highlighted in the list. */
+  currentGptId?: string;
+  onStartGpt: (id: string) => void;
+  onEditGpt: (gpt: Gpt) => void;
+  onCreateGpt: () => void;
 };
 
 /**
@@ -28,8 +40,6 @@ type Props = {
  */
 export function Sidebar(props: Props) {
   const { collapsed, mobileOpen, onCloseMobile } = props;
-  const [query, setQuery] = useState("");
-  const [searching, setSearching] = useState(false);
 
   useEffect(() => {
     if (!mobileOpen) return;
@@ -40,10 +50,6 @@ export function Sidebar(props: Props) {
 
   // Labels are hidden only in the desktop rail; the mobile drawer is always expanded.
   const label = clsx(collapsed && "md:hidden");
-
-  const visible = query
-    ? props.conversations.filter((c) => c.title.toLowerCase().includes(query.toLowerCase()))
-    : props.conversations;
 
   return (
     <>
@@ -83,45 +89,82 @@ export function Sidebar(props: Props) {
           <SidebarRow icon={<SquarePen className="size-[18px]" />} onClick={props.onNewChat} labelClass={label}>
             New chat
           </SidebarRow>
-          {searching && !collapsed ? (
-            <div className="flex h-9 items-center gap-2.5 rounded-lg bg-hover px-2.5">
-              <Search className="size-[18px] shrink-0 text-muted" />
-              <input
-                autoFocus
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                onBlur={() => !query && setSearching(false)}
-                onKeyDown={(e) => {
-                  if (e.key === "Escape") {
-                    setQuery("");
-                    setSearching(false);
-                  }
-                }}
-                placeholder="Search chats"
-                className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted"
-              />
-            </div>
-          ) : (
-            <SidebarRow
-              icon={<Search className="size-[18px]" />}
-              onClick={() => {
-                if (collapsed) props.onToggleCollapsed();
-                setSearching(true);
-              }}
-              labelClass={label}
-            >
-              Search chats
-            </SidebarRow>
-          )}
         </nav>
 
-        {/* Conversations */}
+        {/* GPTs + conversations */}
         <div className={clsx("min-h-0 flex-1 overflow-y-auto px-2", collapsed && "md:invisible")}>
+          <section className="pt-5">
+            <h2 className="px-2.5 pb-2 text-xs font-medium text-muted">GPTs</h2>
+            <ul className="flex flex-col gap-px">
+              {props.gpts.map((g) => (
+                <li key={g.id} className="group relative">
+                  <button
+                    type="button"
+                    onClick={() => props.onStartGpt(g.id)}
+                    title={g.description || g.name}
+                    className={clsx(
+                      "flex h-9 w-full items-center gap-2.5 rounded-lg pr-9 pl-2 text-left text-sm transition-colors hover:bg-hover",
+                      g.id === props.currentGptId && "bg-hover font-medium",
+                    )}
+                  >
+                    <GptAvatar name={g.name} avatar={g.avatar} className="size-6 text-xs" />
+                    <span className="truncate">{g.name}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => props.onEditGpt(g)}
+                    aria-label={`Edit ${g.name}`}
+                    title="Edit GPT"
+                    className="absolute top-1/2 right-1 flex size-7 -translate-y-1/2 items-center justify-center rounded-md text-muted opacity-0 transition-opacity group-hover:opacity-100 hover:text-fg focus-visible:opacity-100 pointer-coarse:opacity-100"
+                  >
+                    <Pencil className="size-3.5" />
+                  </button>
+                </li>
+              ))}
+              {props.shared.map((g) => (
+                <li key={g.id} className="group relative">
+                  <button
+                    type="button"
+                    onClick={() => props.onStartGpt(g.id)}
+                    title={`${g.name} · by ${g.author}`}
+                    className={clsx(
+                      "flex h-9 w-full items-center gap-2.5 rounded-lg pr-9 pl-2 text-left text-sm transition-colors hover:bg-hover",
+                      g.id === props.currentGptId && "bg-hover font-medium",
+                    )}
+                  >
+                    <GptAvatar name={g.name} avatar={g.avatar} className="size-6 text-xs" />
+                    <span className="truncate">{g.name}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => props.onHideShared(g)}
+                    aria-label={`Remove ${g.name} from sidebar`}
+                    title="Remove from sidebar"
+                    className="absolute top-1/2 right-1 flex size-7 -translate-y-1/2 items-center justify-center rounded-md text-muted opacity-0 transition-opacity group-hover:opacity-100 hover:text-fg focus-visible:opacity-100 pointer-coarse:opacity-100"
+                  >
+                    <X className="size-3.5" />
+                  </button>
+                </li>
+              ))}
+              <li>
+                <button
+                  type="button"
+                  onClick={props.onCreateGpt}
+                  className="flex h-9 w-full items-center gap-2.5 rounded-lg px-2 text-left text-sm transition-colors hover:bg-hover"
+                >
+                  <span className="flex size-6 items-center justify-center rounded-full border border-line">
+                    <Plus className="size-3.5" />
+                  </span>
+                  Create a GPT
+                </button>
+              </li>
+            </ul>
+          </section>
           <ConversationList
-            conversations={visible}
+            conversations={props.conversations}
             activeId={props.activeId}
             onSelect={props.onSelect}
-            filtered={Boolean(query)}
+            onDelete={props.onDelete}
           />
         </div>
 

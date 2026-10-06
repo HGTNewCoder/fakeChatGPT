@@ -4,25 +4,27 @@ import { connectDB } from "@/lib/db";
 import { firstIssue, registerSchema } from "@/lib/validation";
 import { User } from "@/models/User";
 
+const TAKEN = "That username is taken";
+
 export async function POST(req: Request) {
   const parsed = registerSchema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) {
     return NextResponse.json({ error: firstIssue(parsed.error) }, { status: 400 });
   }
-  const { name, email, password } = parsed.data;
+  const { username, password } = parsed.data;
 
   await connectDB();
-  if (await User.exists({ email: email.toLowerCase() })) {
-    return NextResponse.json({ error: "An account with this email already exists" }, { status: 409 });
+  if (await User.exists({ username })) {
+    return NextResponse.json({ error: TAKEN }, { status: 409 });
   }
 
   try {
-    const user = await User.create({ name, email, passwordHash: await hashPassword(password) });
+    const user = await User.create({ username, passwordHash: await hashPassword(password) });
     await createSession(String(user._id));
   } catch (err) {
-    // Unique index race: two signups with the same email at once.
+    // Unique index race: two signups with the same username at once.
     if ((err as { code?: number }).code === 11000) {
-      return NextResponse.json({ error: "An account with this email already exists" }, { status: 409 });
+      return NextResponse.json({ error: TAKEN }, { status: 409 });
     }
     throw err;
   }

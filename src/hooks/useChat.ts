@@ -1,30 +1,99 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useCallback, useRef, useState } from "react";
-import type { ImageSize, ModelId } from "@/lib/validation";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { MAX_IMAGES_PER_MESSAGE, type GptDraft, type ImageSize } from "@/lib/validation";
 
-export type ImageRequest = { prompt: string; size: ImageSize };
-export type ImageResult = { url: string; width: number; height: number };
+/** A ready-to-send attachment: images carry a data URL, documents their extracted text. */
+export type Attachment = {
+  id: string;
+  name: string;
+  size: number;
+  kind: "image" | "file";
+  dataUrl?: string;
+  text?: string;
+  truncated?: boolean;
+};
+
+/** An image the assistant is creating (no url yet) or has created. */
+export type GeneratedImage = {
+  prompt: string;
+  size: ImageSize;
+  edit?: boolean;
+  url?: string;
+  width?: number;
+  height?: number;
+};
+
+export type Source = { title: string; url: string };
 
 export type Message = {
   id: string;
   role: "user" | "assistant";
   content: string;
   error?: string;
-  /** Set on both halves of an image turn; `result` arrives on the assistant message. */
-  image?: { request: ImageRequest; result?: ImageResult };
+  attachments?: Attachment[];
+  /** User turns sent from image mode: the reply is always an image of this size. */
+  imageSize?: ImageSize;
+  image?: GeneratedImage;
+  /** Web searches the assistant ran for this reply, in order. */
+  searches?: string[];
+  sources?: Source[];
+  /** True between a search and the next text: drives the "Searching the web" indicator. */
+  searching?: boolean;
 };
 
-export type Conversation = { id: string; title: string; messages: Message[] };
+/** `shareId` is set when the GPT belongs to someone else and is used through its share link. */
+export type Conversation = { id: string; title: string; messages: Message[]; gptId?: string; shareId?: string };
+
+type StreamEvent =
+  | { type: "text"; text: string }
+  | { type: "search"; query: string }
+  | { type: "sources"; sources: Source[] }
+  | { type: "image_start"; prompt: string; size: ImageSize; edit: boolean }
+  | ({ type: "image"; prompt: string; size: ImageSize } & Required<Pick<GeneratedImage, "url" | "width" | "height">>)
+  | { type: "error"; message: string };
 
 const uid = () => crypto.randomUUID();
 
 /**
- * Holds conversations in memory only. Nothing is persisted, so a reload starts fresh.
- * One request (text reply or image) runs at a time.
+ * Builds the request history. Documents are inlined as text; image attachments go alongside as
+ * data URLs, but only the newest few are re-sent to keep request bodies small.
  */
-export function useChat(model: ModelId) {
+function toApiMessages(history: Message[]) {
+  let imageBudget = MAX_IMAGES_PER_MESSAGE;
+  return history
+    .filter((m) => !m.error && (m.content || m.attachments?.length || m.image?.url))
+    .reverse()
+    .map(({ role, content, attachments = [], image }) => {
+      const files = attachments
+        .filter((a) => a.kind === "file")
+        .map((a) => `<file name="${a.name}">\n${a.text ?? ""}\n</file>`);
+      const images = attachments
+        .filter((a) => a.kind === "image" && a.dataUrl)
+        .map((a) => a.dataUrl!)
+        .slice(0, Math.max(0, imageBudget));
+      imageBudget -= images.length;
+      return {
+        role,
+        content: [...files, content].filter(Boolean).join("\n\n"),
+        ...(images.length ? { images } : {}),
+        ...(image?.url ? { generated: { prompt: image.prompt, url: image.url } } : {}),
+      };
+    })
+    .reverse();
+}
+
+/**
+ * Holds conversations in memory only. Nothing is persisted, so a reload starts fresh.
+ * One request runs at a time.
+ */
+export function useChat(options: { getDraft?: () => GptDraft } = {}) {
+  // Read at request time, so the editor's Preview always chats with the latest unsaved settings.
+  const draftRef = useRef(options.getDraft);
+  useEffect(() => {
+    draftRef.current = options.getDraft;
+  });
   const router = useRouter();
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -46,143 +115,133 @@ export function useChat(model: ModelId) {
     [],
   );
 
-  // Shared lifecycle for any in-flight request: abort handle, busy flag, error capture.
-  const run = useCallback(
-    async (
-      convId: string,
-      assistantId: string,
-      task: (signal: AbortSignal) => Promise<void>,
-      onAbort?: (m: Message) => Message,
-    ) => {
+  // Streams one assistant reply: text deltas, and possibly an image the model decided to create.
+  const stream = useCallback(
+    async (convId: string, history: Message[], assistantId: string, gptId?: string, shareId?: string) => {
       const controller = new AbortController();
       abortRef.current = controller;
       setStreamingId(convId);
+      const patch = (fn: (m: Message) => Message) => patchMessage(convId, assistantId, fn);
+
       try {
-        await task(controller.signal);
+        const res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            gptId,
+            shareId,
+            gptDraft: draftRef.current?.(),
+            imageSize: history.at(-1)?.imageSize,
+            timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+            messages: toApiMessages(history),
+          }),
+          signal: controller.signal,
+        });
+        if (res.status === 401) {
+          router.replace("/login");
+          throw new Error("Your session expired. Please log in again.");
+        }
+        if (!res.ok || !res.body) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.error ?? `Request failed (${res.status})`);
+        }
+
+        const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+        let buffer = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += value;
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
+          for (const line of lines) {
+            if (!line) continue;
+            const event = JSON.parse(line) as StreamEvent;
+            if (event.type === "text") patch((m) => ({ ...m, content: m.content + event.text, searching: false }));
+            else if (event.type === "search")
+              patch((m) => ({ ...m, searches: [...(m.searches ?? []), event.query], searching: true }));
+            else if (event.type === "sources")
+              patch((m) => {
+                const known = new Set(m.sources?.map((s) => s.url));
+                const fresh = event.sources.filter((s) => !known.has(s.url) && known.add(s.url));
+                return { ...m, sources: [...(m.sources ?? []), ...fresh] };
+              });
+            else if (event.type === "image_start")
+              patch((m) => ({ ...m, image: { prompt: event.prompt, size: event.size, edit: event.edit } }));
+            else if (event.type === "image")
+              patch((m) => ({
+                ...m,
+                image: {
+                  ...m.image,
+                  prompt: event.prompt,
+                  size: event.size,
+                  url: event.url,
+                  width: event.width,
+                  height: event.height,
+                },
+              }));
+            else throw new Error(event.message);
+          }
+        }
       } catch (err) {
         if (controller.signal.aborted) {
-          if (onAbort) patchMessage(convId, assistantId, onAbort);
+          patch((m) => ({
+            ...m,
+            searching: false,
+            ...(m.image && !m.image.url ? { error: "Image generation stopped." } : {}),
+          }));
           return;
         }
-        patchMessage(convId, assistantId, (m) => ({
-          ...m,
-          error: err instanceof Error ? err.message : "Something went wrong",
-        }));
+        patch((m) => ({ ...m, searching: false, error: err instanceof Error ? err.message : "Something went wrong" }));
       } finally {
         if (abortRef.current === controller) abortRef.current = null;
         setStreamingId((id) => (id === convId ? null : id));
       }
     },
-    [patchMessage],
+    [patchMessage, router],
   );
 
-  const post = useCallback(
-    async (url: string, body: unknown, signal: AbortSignal) => {
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-        signal,
-      });
-      if (res.status === 401) {
-        router.replace("/login");
-        throw new Error("Your session expired. Please log in again.");
-      }
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error ?? `Request failed (${res.status})`);
-      }
-      return res;
-    },
-    [router],
-  );
+  /**
+   * Appends a user + empty assistant message, creating the conversation if needed.
+   * `gptId` only applies when this message starts a new conversation; `imageSize` forces an image.
+   */
+  const send = useCallback(
+    (
+      text: string,
+      attachments: Attachment[] = [],
+      opts: { gptId?: string; shareId?: string; imageSize?: ImageSize } = {},
+    ) => {
+      const content = text.trim();
+      if ((!content && !attachments.length) || streamingId) return;
 
-  const streamText = useCallback(
-    (convId: string, history: Message[], assistantId: string) =>
-      run(convId, assistantId, async (signal) => {
-        const res = await post(
-          "/api/chat",
-          {
-            model,
-            // Image turns aren't part of the text conversation the LLM sees.
-            messages: history
-              .filter((m) => !m.error && !m.image && m.content)
-              .map(({ role, content }) => ({ role, content })),
-          },
-          signal,
-        );
-        if (!res.body) throw new Error("Empty response");
-
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          const chunk = decoder.decode(value, { stream: true });
-          if (chunk) patchMessage(convId, assistantId, (m) => ({ ...m, content: m.content + chunk }));
-        }
-      }),
-    [model, patchMessage, post, run],
-  );
-
-  const createImage = useCallback(
-    (convId: string, assistantId: string, request: ImageRequest) =>
-      run(
-        convId,
-        assistantId,
-        async (signal) => {
-          const res = await post("/api/image", request, signal);
-          const result = (await res.json()) as ImageResult;
-          patchMessage(convId, assistantId, (m) => ({ ...m, image: { request, result } }));
-        },
-        (m) => ({ ...m, error: "Image generation stopped." }),
-      ),
-    [patchMessage, post, run],
-  );
-
-  // Appends a user + empty assistant message, creating the conversation if needed.
-  const startTurn = useCallback(
-    (content: string, image?: ImageRequest) => {
-      const userMsg: Message = { id: uid(), role: "user", content, image: image && { request: image } };
-      const assistantMsg: Message = { id: uid(), role: "assistant", content: "", image: image && { request: image } };
+      const userMsg: Message = {
+        id: uid(),
+        role: "user",
+        content,
+        attachments: attachments.length ? attachments : undefined,
+        imageSize: opts.imageSize,
+      };
+      const assistantMsg: Message = { id: uid(), role: "assistant", content: "" };
 
       if (!active) {
         const convId = uid();
-        const title = content.length > 48 ? `${content.slice(0, 48).trimEnd()}…` : content;
-        setConversations((prev) => [{ id: convId, title, messages: [userMsg, assistantMsg] }, ...prev]);
+        const label = content || attachments[0]?.name || "New chat";
+        const title = label.length > 48 ? `${label.slice(0, 48).trimEnd()}…` : label;
+        setConversations((prev) => [
+          { id: convId, title, gptId: opts.gptId, shareId: opts.shareId, messages: [userMsg, assistantMsg] },
+          ...prev,
+        ]);
         setActiveId(convId);
-        return { convId, history: [userMsg], assistantId: assistantMsg.id };
+        void stream(convId, [userMsg], assistantMsg.id, opts.gptId, opts.shareId);
+        return;
       }
 
       setConversations((prev) =>
-        prev.map((c) =>
-          c.id === active.id ? { ...c, messages: [...c.messages, userMsg, assistantMsg] } : c,
-        ),
+        prev.map((c) => (c.id === active.id ? { ...c, messages: [...c.messages, userMsg, assistantMsg] } : c)),
       );
-      return { convId: active.id, history: [...active.messages, userMsg], assistantId: assistantMsg.id };
+      void stream(active.id, [...active.messages, userMsg], assistantMsg.id, active.gptId, active.shareId);
     },
-    [active],
-  );
-
-  const send = useCallback(
-    (text: string) => {
-      const content = text.trim();
-      if (!content || streamingId) return;
-      const { convId, history, assistantId } = startTurn(content);
-      void streamText(convId, history, assistantId);
-    },
-    [startTurn, streamText, streamingId],
-  );
-
-  const generateImage = useCallback(
-    (text: string, size: ImageSize) => {
-      const prompt = text.trim();
-      if (!prompt || streamingId) return;
-      const request = { prompt, size };
-      const { convId, assistantId } = startTurn(prompt, request);
-      void createImage(convId, assistantId, request);
-    },
-    [createImage, startTurn, streamingId],
+    [active, stream, streamingId],
   );
 
   const retry = useCallback(() => {
@@ -191,20 +250,24 @@ export function useChat(model: ModelId) {
     if (!last || last.role !== "assistant" || !last.error) return;
 
     const history = active.messages.slice(0, -1);
-    const assistantMsg: Message = {
-      id: uid(),
-      role: "assistant",
-      content: "",
-      image: last.image && { request: last.image.request },
-    };
+    const assistantMsg: Message = { id: uid(), role: "assistant", content: "" };
     setConversations((prev) =>
       prev.map((c) => (c.id === active.id ? { ...c, messages: [...history, assistantMsg] } : c)),
     );
-    if (last.image) void createImage(active.id, assistantMsg.id, last.image.request);
-    else void streamText(active.id, history, assistantMsg.id);
-  }, [active, createImage, streamText, streamingId]);
+    void stream(active.id, history, assistantMsg.id, active.gptId, active.shareId);
+  }, [active, stream, streamingId]);
 
   const stop = useCallback(() => abortRef.current?.abort(), []);
+
+  const remove = useCallback(
+    (id: string) => {
+      // Stop a reply still streaming into this chat before dropping it.
+      if (streamingId === id) abortRef.current?.abort();
+      setConversations((prev) => prev.filter((c) => c.id !== id));
+      setActiveId((current) => (current === id ? null : current));
+    },
+    [streamingId],
+  );
 
   return {
     conversations,
@@ -212,9 +275,9 @@ export function useChat(model: ModelId) {
     activeId,
     streamingId,
     send,
-    generateImage,
     stop,
     retry,
+    remove,
     select: setActiveId,
     newChat: () => setActiveId(null),
   };

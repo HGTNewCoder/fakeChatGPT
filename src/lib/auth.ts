@@ -8,7 +8,7 @@ import { User } from "@/models/User";
 const COOKIE = "session";
 const MAX_AGE = 60 * 60 * 24 * 7; // 7 days
 
-export type SessionUser = { id: string; name: string; email: string };
+export type SessionUser = { id: string; username: string };
 
 function secret() {
   const value = process.env.JWT_SECRET;
@@ -55,7 +55,7 @@ export async function getCurrentUser(): Promise<SessionUser | null> {
   const id = await sessionUserId();
   if (!id) return null;
   await connectDB();
-  const user = await User.findById(id).select("name email").lean().catch(() => null);
+  const user = await User.findById(id).select("username").lean().catch(() => null);
   if (!user) return null;
-  return { id: String(user._id), name: user.name, email: user.email };
+  return { id: String(user._id), username: user.username };
 }
